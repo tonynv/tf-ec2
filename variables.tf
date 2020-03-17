@@ -10,8 +10,9 @@ variable "instance_count" {
 }
 
 variable "ami" {
-  description = "ID of AMI to use for the instance"
+  description = "ID of AMI to use for the instance (us-west-2)"
   type        = string
+  default     = "ami-0e8c04af2729ff1bb"
 }
 
 variable "placement_group" {

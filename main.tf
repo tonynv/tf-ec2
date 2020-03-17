@@ -1,175 +1,96 @@
-provider "aws" {
-  region = "us-west-2"
-}
-
 locals {
-  user_data = <<EOF
-#!/bin/bash
-echo "Hello World!"
-EOF
+  is_t_instance_type = replace(var.instance_type, "/^t(2|3|3a){1}\\..*$/", "1") == "1" ? true : false
 }
 
-##################################################################
-# Data sources to get VPC, subnet, security group and AMI details
-##################################################################
-data "aws_vpc" "default" {
-  default = true
-}
+resource "aws_instance" "this" {
+  count = var.instance_count
 
-data "aws_subnet_ids" "all" {
-  vpc_id = data.aws_vpc.default.id
-}
+  ami              = var.ami
+  instance_type    = var.instance_type
+  user_data        = var.user_data
+  user_data_base64 = var.user_data_base64
+  subnet_id = length(var.network_interface) > 0 ? null : element(
+    distinct(compact(concat([var.subnet_id], var.subnet_ids))),
+    count.index,
+  )
+  key_name               = var.key_name
+  monitoring             = var.monitoring
+  get_password_data      = var.get_password_data
+  vpc_security_group_ids = var.vpc_security_group_ids
+  iam_instance_profile   = var.iam_instance_profile
 
-data "aws_ami" "amazon_linux" {
-  most_recent = true
+  associate_public_ip_address = var.associate_public_ip_address
+  private_ip                  = length(var.private_ips) > 0 ? element(var.private_ips, count.index) : var.private_ip
+  ipv6_address_count          = var.ipv6_address_count
+  ipv6_addresses              = var.ipv6_addresses
 
-  owners = ["amazon"]
+  ebs_optimized = var.ebs_optimized
 
-  filter {
-    name = "name"
-
-    values = [
-      "amzn-ami-hvm-*-x86_64-gp2",
-    ]
+  dynamic "root_block_device" {
+    for_each = var.root_block_device
+    content {
+      delete_on_termination = lookup(root_block_device.value, "delete_on_termination", null)
+      encrypted             = lookup(root_block_device.value, "encrypted", null)
+      iops                  = lookup(root_block_device.value, "iops", null)
+      kms_key_id            = lookup(root_block_device.value, "kms_key_id", null)
+      volume_size           = lookup(root_block_device.value, "volume_size", null)
+      volume_type           = lookup(root_block_device.value, "volume_type", null)
+    }
   }
 
-  filter {
-    name = "owner-alias"
-
-    values = [
-      "amazon",
-    ]
+  dynamic "ebs_block_device" {
+    for_each = var.ebs_block_device
+    content {
+      delete_on_termination = lookup(ebs_block_device.value, "delete_on_termination", null)
+      device_name           = ebs_block_device.value.device_name
+      encrypted             = lookup(ebs_block_device.value, "encrypted", null)
+      iops                  = lookup(ebs_block_device.value, "iops", null)
+      kms_key_id            = lookup(ebs_block_device.value, "kms_key_id", null)
+      snapshot_id           = lookup(ebs_block_device.value, "snapshot_id", null)
+      volume_size           = lookup(ebs_block_device.value, "volume_size", null)
+      volume_type           = lookup(ebs_block_device.value, "volume_type", null)
+    }
   }
-}
 
-module "security_group" {
-  source  = "terraform-aws-modules/security-group/aws"
-  version = "~> 3.0"
+  dynamic "ephemeral_block_device" {
+    for_each = var.ephemeral_block_device
+    content {
+      device_name  = ephemeral_block_device.value.device_name
+      no_device    = lookup(ephemeral_block_device.value, "no_device", null)
+      virtual_name = lookup(ephemeral_block_device.value, "virtual_name", null)
+    }
+  }
 
-  name        = "example"
-  description = "Security group for example usage with EC2 instance"
-  vpc_id      = data.aws_vpc.default.id
+  dynamic "network_interface" {
+    for_each = var.network_interface
+    content {
+      device_index          = network_interface.value.device_index
+      network_interface_id  = lookup(network_interface.value, "network_interface_id", null)
+      delete_on_termination = lookup(network_interface.value, "delete_on_termination", false)
+    }
+  }
 
-  ingress_cidr_blocks = ["0.0.0.0/0"]
-  ingress_rules       = ["http-80-tcp", "all-icmp"]
-  egress_rules        = ["all-all"]
-}
+  source_dest_check                    = length(var.network_interface) > 0 ? null : var.source_dest_check
+  disable_api_termination              = var.disable_api_termination
+  instance_initiated_shutdown_behavior = var.instance_initiated_shutdown_behavior
+  placement_group                      = var.placement_group
+  tenancy                              = var.tenancy
 
-resource "aws_eip" "this" {
-  vpc      = true
-  instance = module.ec2.id[0]
-}
-
-resource "aws_placement_group" "web" {
-  name     = "hunky-dory-pg"
-  strategy = "cluster"
-}
-
-resource "aws_kms_key" "this" {
-}
-
-resource "aws_network_interface" "this" {
-  count = 1
-
-  subnet_id = tolist(data.aws_subnet_ids.all.ids)[count.index]
-}
-
-module "ec2" {
-  source = "../../"
-
-  instance_count = 1
-
-  name          = "example-normal"
-  ami           = data.aws_ami.amazon_linux.id
-  instance_type = "c5.large"
-  subnet_id     = tolist(data.aws_subnet_ids.all.ids)[0]
-  //  private_ips                 = ["172.31.32.5", "172.31.46.20"]
-  vpc_security_group_ids      = [module.security_group.this_security_group_id]
-  associate_public_ip_address = true
-  placement_group             = aws_placement_group.web.id
-
-  user_data_base64 = base64encode(local.user_data)
-
-  root_block_device = [
+  tags = merge(
     {
-      volume_type = "gp2"
-      volume_size = 10
+      "Name" = var.instance_count > 1 || var.use_num_suffix ? format("%s-%d", var.name, count.index + 1) : var.name
     },
-  ]
+    var.tags,
+  )
 
-  ebs_block_device = [
+  volume_tags = merge(
     {
-      device_name = "/dev/sdf"
-      volume_type = "gp2"
-      volume_size = 5
-      encrypted   = true
-      kms_key_id  = aws_kms_key.this.arn
-    }
-  ]
+      "Name" = var.instance_count > 1 || var.use_num_suffix ? format("%s-%d", var.name, count.index + 1) : var.name
+    },
+    var.volume_tags,
+  )
 
-  tags = {
-    "Env"      = "Private"
-    "Location" = "Secret"
+  credit_specification {
+    cpu_credits = local.is_t_instance_type ? var.cpu_credits : null
   }
-}
-
-module "ec2_with_t2_unlimited" {
-  source = "../../"
-
-  instance_count = 1
-
-  name          = "example-t2-unlimited"
-  ami           = data.aws_ami.amazon_linux.id
-  instance_type = "t2.micro"
-  cpu_credits   = "unlimited"
-  subnet_id     = tolist(data.aws_subnet_ids.all.ids)[0]
-  //  private_ip = "172.31.32.10"
-  vpc_security_group_ids      = [module.security_group.this_security_group_id]
-  associate_public_ip_address = true
-}
-
-module "ec2_with_t3_unlimited" {
-  source = "../../"
-
-  instance_count = 1
-
-  name                        = "example-t3-unlimited"
-  ami                         = data.aws_ami.amazon_linux.id
-  instance_type               = "t3.large"
-  cpu_credits                 = "unlimited"
-  subnet_id                   = tolist(data.aws_subnet_ids.all.ids)[0]
-  vpc_security_group_ids      = [module.security_group.this_security_group_id]
-  associate_public_ip_address = true
-}
-
-module "ec2_with_network_interface" {
-  source = "../../"
-
-  instance_count = 1
-
-  name            = "example-network"
-  ami             = data.aws_ami.amazon_linux.id
-  instance_type   = "c5.large"
-  placement_group = aws_placement_group.web.id
-
-  network_interface = [
-    {
-      device_index          = 0
-      network_interface_id  = aws_network_interface.this[0].id
-      delete_on_termination = false
-    }
-  ]
-}
-
-# This instance won't be created
-module "ec2_zero" {
-  source = "../../"
-
-  instance_count = 0
-
-  name                   = "example-zero"
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "c5.large"
-  subnet_id              = tolist(data.aws_subnet_ids.all.ids)[0]
-  vpc_security_group_ids = [module.security_group.this_security_group_id]
 }
