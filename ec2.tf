@@ -7,7 +7,7 @@ provider "aws" {
   skip_region_validation      = true
 }
 resource "aws_instance" "plx_ec2" {
-  ami           = "ami-07c1207a9d40bc3bd"
+  ami           = "ami-0323c3dd2da7fb37d"
   instance_type = "t2.micro"
   key_name      = "tonynv"
   tags = {
